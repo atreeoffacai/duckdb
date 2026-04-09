@@ -44,13 +44,15 @@ void RelationManager::AddAggregateOrWindowRelation(LogicalOperator &op, optional
 	op.has_estimated_cardinality = true;
 }
 
+// xm comment: 1.把op及其子树包装成一个relation;
+// 2.把这个relation中引用的所有表都添加到relation mapping中;
 void RelationManager::AddRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent,
                                   const RelationStats &stats) {
 	// if parent is null, then this is a root relation
 	// if parent is not null, it should have multiple children
 	D_ASSERT(!parent || parent->children.size() >= 2);
-	auto relation = make_uniq<SingleJoinRelation>(op, parent, stats);
-	RelationIndex relation_id(relations.size());
+	auto relation = make_uniq<SingleJoinRelation>(op, parent, stats); // 包装成relation
+	RelationIndex relation_id(relations.size()); // 分配超图中的编号
 
 	auto table_indexes = op.GetTableIndex();
 	bool is_mark = op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
@@ -60,9 +62,9 @@ void RelationManager::AddRelation(LogicalOperator &op, optional_ptr<LogicalOpera
 		get_all_child_bindings = !op.children.empty();
 	}
 	if (table_indexes.empty() || is_mark) {
-		// relation represents a non-reorderable relation, most likely a join relation
-		// Get the tables referenced in the non-reorderable relation and add them to the relation mapping
-		// This should all table references, even if there are nested non-reorderable joins.
+		// relation 表示一个不可重排序的关系，很可能是一个连接（join）关系。
+		// 获取该不可重排序关系中引用的所有表，并将它们添加到关系映射（relation mapping）中。
+		// 这里应当包含所有的表引用，即使其中存在嵌套的不可重排序连接。
 		unordered_set<TableIndex> table_references;
 		LogicalJoin::GetTableReferences(op, table_references);
 		D_ASSERT(!table_references.empty());
@@ -71,13 +73,15 @@ void RelationManager::AddRelation(LogicalOperator &op, optional_ptr<LogicalOpera
 			relation_mapping[reference] = relation_id;
 		}
 	} else if (get_all_child_bindings) {
-		// logical get has a logical_get index, but if a function is present other bindings can refer to
-		// columns that are not unnested, and from the child of the logical get.
+		// LogicalGet 拥有一个 logical_get 索引，
+		// 但如果存在函数（function），其他绑定（bindings）可能会引用那些未被展开（unnested）的列，以及 LogicalGet 子节点中的列。
+
+		// 1. GetColumnBindings(): 拿到这个算子向外输出的**所有**列信息（包括它继承的，以及它新生成的）
 		auto bindings = op.GetColumnBindings();
-		for (auto &binding : bindings) {
-			relation_mapping[binding.table_index] = relation_id;
+		for (auto &binding : bindings) { // 2. 遍历这些列
+			relation_mapping[binding.table_index] = relation_id; // 3. 把这些列所属的所有的 table_index，统统指向当前这一个图节点！
 		}
-	} else {
+	} else { // 普通表
 		// Relations should never return more than 1 table index
 		D_ASSERT(table_indexes.size() == 1);
 		auto table_index = table_indexes.at(0);
@@ -242,7 +246,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		// set operation, optimize separately in children
 		non_reorderable_operation = true;
 	}
-
+	//上面的OperatorIsNonReorderable没有考虑Join的情况，所以单独把Join拿出来判断了一下
 	if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		if (JoinIsReorderable(*op)) {
 			// extract join conditions from inner join
@@ -252,18 +256,22 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		}
 	}
 	if (non_reorderable_operation) {
-		// we encountered a non-reordable operation (setop or non-inner join)
-		// we do not reorder non-inner joins yet, however we do want to expand the potential join graph around them
-		// non-inner joins are also tricky because we can't freely make conditions through them
-		// e.g. suppose we have (left LEFT OUTER JOIN right WHERE right IS NOT NULL), the join can generate
-		// new NULL values in the right side, so pushing this condition through the join leads to incorrect results
-		// for this reason, we just start a new JoinOptimizer pass in each of the children of the join
-		// stats.cardinality will be initiated to highest cardinality of the children.
+		// 我们遇到了一个不可重排序的操作（如集合操作或非内连接）。
+		// 目前我们还不会对非内连接进行重排序，
+		// 但我们希望在其周围扩展可能的连接图（join graph）。
+		// 非内连接也较为棘手，因为我们不能随意将条件推过它们。
+		// 例如，假设我们有：
+		//   (left LEFT OUTER JOIN right WHERE right IS NOT NULL)
+		// 这个左外连接可能会在右表一侧生成新的 NULL 值，
+		// 因此如果将 "right IS NOT NULL" 这个条件下推穿过该连接，
+		// 就会导致错误的结果。
+		// 出于这个原因，我们改为对这个连接的每个子节点分别启动一次新的 JoinOptimizer 优化过程。
+		// 此时，统计信息中的基数（stats.cardinality）将被初始化为各子节点中最大的基数。
 		vector<RelationStats> children_stats;
 		for (auto &child : op->children) {
 			auto stats = RelationStats();
 			auto child_optimizer = optimizer.CreateChildOptimizer();
-			child = child_optimizer.Optimize(std::move(child), &stats);
+			child = child_optimizer.Optimize(std::move(child), &stats); // 分别优化每一个子节点
 			children_stats.push_back(stats);
 		}
 
