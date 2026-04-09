@@ -93,16 +93,17 @@ bool RelationManager::CrossProductWithRelationAllowed(idx_t relation_id) {
 	return no_cross_product_relations.find(relation_id) == no_cross_product_relations.end();
 }
 
+// xm comment: 这个函数的含义是：需不需要把当前这个op当成一个relaton来处理？这里的relation是指超图中的一个普通节点。
 static bool OperatorNeedsRelation(LogicalOperatorType op_type) {
 	switch (op_type) {
-	case LogicalOperatorType::LOGICAL_PROJECTION:
-	case LogicalOperatorType::LOGICAL_EXPRESSION_GET:
-	case LogicalOperatorType::LOGICAL_GET:
-	case LogicalOperatorType::LOGICAL_UNNEST:
-	case LogicalOperatorType::LOGICAL_DELIM_GET:
-	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
-	case LogicalOperatorType::LOGICAL_WINDOW:
-	case LogicalOperatorType::LOGICAL_SAMPLE:
+	case LogicalOperatorType::LOGICAL_PROJECTION: // 改变了列，比如生成了新的列；所以把这个操作符及其子树当成一个relation来处理；
+	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: // 数据源，本就是relation
+	case LogicalOperatorType::LOGICAL_GET: // 数据源，本就是relation
+	case LogicalOperatorType::LOGICAL_UNNEST: // unnest会生成新的列，所以把这个操作符及其子树当成一个relation来处理；
+	case LogicalOperatorType::LOGICAL_DELIM_GET: // 数据源，本就是relation
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: // 聚合操作，需要当成一个relation来处理
+	case LogicalOperatorType::LOGICAL_WINDOW: // 窗口操作，需要当成一个relation来处理
+	case LogicalOperatorType::LOGICAL_SAMPLE: // sample会改变行数，所以把这个操作符及其子树当成一个relation来处理；
 		return true;
 	default:
 		return false;
