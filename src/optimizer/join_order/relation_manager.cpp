@@ -110,12 +110,13 @@ static bool OperatorNeedsRelation(LogicalOperatorType op_type) {
 	}
 }
 
+// 在LogicalOperatorType层面指明哪一些操作符是不能被重排序的
 static bool OperatorIsNonReorderable(LogicalOperatorType op_type) {
 	switch (op_type) {
-	case LogicalOperatorType::LOGICAL_UNION:
-	case LogicalOperatorType::LOGICAL_EXCEPT:
-	case LogicalOperatorType::LOGICAL_INTERSECT:
-	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_UNION: // 并集
+	case LogicalOperatorType::LOGICAL_EXCEPT: // 差集
+	case LogicalOperatorType::LOGICAL_INTERSECT: // 交集
+	case LogicalOperatorType::LOGICAL_ANY_JOIN: // 两个特殊的连接类型，不能被重排序
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 		return true;
 	default:
@@ -223,11 +224,11 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	optional_ptr<LogicalOperator> op = &input_op;
 	vector<reference<LogicalOperator>> datasource_filters;
 	optional_ptr<LogicalOperator> limit_op = nullptr;
-	// pass through single child operators
+	// pass through single child operators xm comment: 穿过单节点操作符，且这些单节点操作符不需要被当成一个relation
 	while (op->children.size() == 1 && !OperatorNeedsRelation(op->type)) {
 		if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
-			if (HasNonReorderableChild(*op)) {
-				datasource_filters.push_back(*op);
+			if (HasNonReorderableChild(*op)) { // 判断这个filter算子是否被视为一个relation
+				datasource_filters.push_back(*op); // 如果被视为一个relation了，就把它加入datasource_filters列表中，后续在计算relation的stats时会用到这个列表中的filter来调整stats
 			}
 			filter_operators.push_back(*op);
 		}
