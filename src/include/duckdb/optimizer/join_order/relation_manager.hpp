@@ -23,7 +23,7 @@ namespace duckdb {
 class JoinOrderOptimizer;
 class FilterInfo;
 
-//! Represents a single relation and any metadata accompanying that relation
+//! 表示单个关系及其伴随的任何元数据
 struct SingleJoinRelation {
 	LogicalOperator &op;
 	optional_ptr<LogicalOperator> parent;
@@ -67,6 +67,7 @@ public:
 
 	const vector<RelationStats> GetRelationStats();
 	//! A mapping of base table index -> index into relations array (relation number)
+	//! 从基础表索引到关系数组索引（关系编号）的映射
 	unordered_map<TableIndex, RelationIndex> relation_mapping;
 
 	bool CrossProductWithRelationAllowed(idx_t relation_id);

@@ -36,8 +36,8 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	// make sure query graph manager has not extracted a relation graph already
 	LogicalOperator *op = plan.get();
 
-	// extract the relations that go into the hyper graph.
-	// We optimize the children of any non-reorderable operations we come across.
+	// 提取构成超图的关系。
+	// 我们优化遇到的任何不可重排序操作的子节点。
 	bool reorderable = query_graph_manager.Build(*this, *op);
 
 	// get relation_stats here since the reconstruction process will move all relations.

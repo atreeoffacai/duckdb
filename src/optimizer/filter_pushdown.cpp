@@ -101,7 +101,7 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		return PushdownAggregate(std::move(op));
 	case LogicalOperatorType::LOGICAL_FILTER:
-		return PushdownFilter(std::move(op));
+		return PushdownFilter(std::move(op)); // 这里有可能导致 filter -> 带projection的filter 
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
 		return PushdownCrossProduct(std::move(op));
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
@@ -162,7 +162,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 
 	unique_ptr<LogicalOperator> result;
 	switch (join.join_type) {
-	case JoinType::OUTER:
+	case JoinType::OUTER: // 这是全外连接，基本上不能下推，这里也处理了一个特殊的情况
 		result = PushdownOuterJoin(std::move(op), left_bindings, right_bindings);
 		break;
 	case JoinType::INNER:
@@ -173,7 +173,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 		}
 		result = PushdownInnerJoin(std::move(op), left_bindings, right_bindings);
 		break;
-	case JoinType::LEFT:
+	case JoinType::LEFT: // 这是左外连接
 		result = PushdownLeftJoin(std::move(op), left_bindings, right_bindings);
 		break;
 	case JoinType::MARK:
@@ -226,11 +226,11 @@ FilterResult FilterPushdown::AddFilter(unique_ptr<Expression> expr) {
 	if (PushFilters() == FilterResult::UNSATISFIABLE) {
 		return FilterResult::UNSATISFIABLE;
 	}
-	// split up the filters by AND predicate
+	// 按AND谓词拆分过滤条件
 	vector<unique_ptr<Expression>> expressions;
 	expressions.push_back(std::move(expr));
 	LogicalFilter::SplitPredicates(expressions);
-	// push the filters into the combiner
+	// 将过滤条件推送到组合器combiner中
 	for (auto &child_expr : expressions) {
 		if (combiner.AddFilter(std::move(child_expr)) == FilterResult::UNSATISFIABLE) {
 			return FilterResult::UNSATISFIABLE;
@@ -329,7 +329,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<
 }
 
 unique_ptr<LogicalOperator> FilterPushdown::FinishPushdown(unique_ptr<LogicalOperator> op) {
-	// unhandled type, first perform filter pushdown in its children
+	// unhandled type, first perform filter pushdown in its children xm: 单独优化子节点
 	for (auto &child : op->children) {
 		FilterPushdown pushdown(optimizer, convert_mark_joins);
 		child = pushdown.Rewrite(std::move(child));

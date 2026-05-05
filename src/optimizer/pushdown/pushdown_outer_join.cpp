@@ -88,11 +88,12 @@ static bool ExprIsFunctionOnlyOf(const Expression &expr, const expression_set_t 
 	return expr_to_check->IsScalar();
 }
 
-//! Whenever a filter is of the form `P(coalesce(l, r))` or `P(coalesce(r, l))`
-//! where `P` is some predicate that depends only on `coalesce(l, r)` and there
-//! is a join condition of the form `l = r` where `l` and `r` are join keys for
-//! the left and right table respectively, then pushdown `P(l)` to the left
-//! table, `P(r)` to the right table, and remove the original filter.
+//! 每当过滤器的形式为 `P(coalesce(l, r))` 或 `P(coalesce(r, l))`，
+//! 其中 `P` 是某个仅依赖于 `coalesce(l, r)` 的谓词，
+//! 并且存在形式为 `l = r` 的连接条件，
+//! 其中 `l` 和 `r` 分别是左表和右表的连接键时，
+//! 那么将 `P(l)` 下推到左表，将 `P(r)` 下推到右表，
+//! 并移除原始过滤器。
 static bool
 PushDownFiltersOnCoalescedEqualJoinKeys(vector<unique_ptr<Filter>> &filters, vector<JoinCondition> &join_conditions,
                                         const std::function<void(unique_ptr<Expression> filter)> &pushdown_left,

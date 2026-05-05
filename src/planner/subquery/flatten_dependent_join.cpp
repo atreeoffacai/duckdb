@@ -373,15 +373,15 @@ bool SubqueryDependentFilter(Expression &expr) {
 unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal(unique_ptr<LogicalOperator> plan,
                                                                                  bool &parent_propagate_null_values,
                                                                                  idx_t lateral_depth) {
-	// first check if the logical operator has correlated expressions
+	// 首先检查逻辑运算符是否包含关联表达式
 	auto entry = has_correlated_expressions.find(*plan);
 	bool exit_projection = false;
 	unique_ptr<LogicalDelimGet> delim_scan;
 	D_ASSERT(entry != has_correlated_expressions.end());
 	if (!entry->second) {
-		// we reached a node without correlated expressions
-		// we can eliminate the dependent join now and create a simple cross product
-		// now create the duplicate eliminated scan for this node
+		// 我们到达了一个没有关联表达式的节点
+		// 我们现在可以消除依赖连接并创建一个简单的笛卡尔积
+		// 现在为该节点创建去重扫描
 		if (plan->type == LogicalOperatorType::LOGICAL_CTE_REF) {
 			auto &op = plan->Cast<LogicalCTERef>();
 
@@ -399,7 +399,7 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 			}
 		}
 
-		// create cross product with Delim Join
+		// 与 Delim Join 创建笛卡尔积
 		auto delim_index = binder.GenerateTableIndex();
 		base_binding = ColumnBinding(delim_index, ProjectionIndex(0));
 
@@ -408,18 +408,18 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 		data_offset = 0;
 		delim_scan = make_uniq<LogicalDelimGet>(delim_index, delim_types);
 		if (plan->type == LogicalOperatorType::LOGICAL_PROJECTION) {
-			// we want to keep the logical projection for positionality.
+			// 为了保持位置性，我们需要保留逻辑投影。
 			exit_projection = true;
 		} else if (plan->type == LogicalOperatorType::LOGICAL_CTE_REF) {
-			// Should a reference to a CTE be the final non-recursive operator,
-			// we have to add a filter predicate to ensure column equality between
-			// the left and right side of the join. A simple cross product does not
-			// suffice in this case.
+			// 如果对 CTE 的引用是最后一个非递归运算符，
+			// 我们就必须添加一个过滤谓词，以确保连接的
+			// 左侧和右侧之间的列相等。在这种情况下，
+			// 简单的笛卡尔积是不够的。
 			auto &cteref = plan->Cast<LogicalCTERef>();
 			auto join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
 			auto left_binding = ColumnBinding(cteref.table_index,
 			                                  ProjectionIndex(cteref.chunk_types.size() - cteref.correlated_columns));
-			// add the correlated columns to the join conditions
+			// 将关联列添加到连接条件中
 			for (idx_t i = 0; i < cteref.correlated_columns; i++) {
 				JoinCondition cond(
 				    make_uniq<BoundColumnRefExpression>(
@@ -443,36 +443,35 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 	switch (plan->type) {
 	case LogicalOperatorType::LOGICAL_UNNEST:
 	case LogicalOperatorType::LOGICAL_FILTER: {
-		// filter
-		// first we flatten the dependent join in the child of the filter
+		// 过滤器
+		// 首先，我们在过滤器的子节点中将依赖连接扁平化
 		for (auto &expr : plan->expressions) {
 			any_join |= SubqueryDependentFilter(*expr);
 		}
 		plan->children[0] =
 		    PushDownDependentJoinInternal(std::move(plan->children[0]), parent_propagate_null_values, lateral_depth);
 
-		// then we replace any correlated expressions with the corresponding entry in the correlated_map
+		// 然后，我们将所有关联表达式替换为 correlated_map 中对应的条
 		RewriteCorrelatedExpressions rewriter(base_binding, correlated_map, lateral_depth);
 		rewriter.VisitOperator(*plan);
 		return plan;
 	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
-		// projection
-		// first we flatten the dependent join in the child of the projection
+		// 投影
+		// 首先，我们在投影的子节点中将依赖连接扁平化
 		for (auto &expr : plan->expressions) {
 			parent_propagate_null_values &= expr->PropagatesNullValues();
 		}
 
-		// If our immediate children is a DEPENDENT JOIN, the projection expressions did contain
-		// a subquery expression previously—Which does not propagate null values.
-		// We have to account for that.
+		// 如果我们的直接子节点是 DEPENDENT JOIN，说明投影表达式之前包含一个子查询表达式
+		// ——而子查询表达式通常不会传播空值。
+		// 我们必须考虑到这一点。
 		bool child_is_dependent_join = plan->children[0]->type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN;
 		parent_propagate_null_values &= !child_is_dependent_join;
 
-		// if the node has no correlated expressions,
-		// push the cross product with the delim get only below the projection.
-		// This will preserve positionality of the columns and prevent errors when reordering of
-		// delim gets is enabled.
+		// 如果该节点没有关联表达式，
+		// 就将与 delim get 的笛卡尔积仅下推到投影操作之下。
+		// 这将保留列的位置性，并防止在启用 delim gets 重排序时出现错误。
 		if (exit_projection) {
 			auto cross_product =
 			    LogicalCrossProduct::Create(Decorrelate(std::move(plan->children[0])), std::move(delim_scan));
@@ -482,7 +481,7 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 			                                                  parent_propagate_null_values, lateral_depth);
 		}
 
-		// then we replace any correlated expressions with the corresponding entry in the correlated_map
+		// 然后，我们将所有关联表达式替换为 correlated_map 中对应的条目
 		RewriteCorrelatedExpressions rewriter(base_binding, correlated_map, lateral_depth);
 		rewriter.VisitOperator(*plan);
 		// now we add all the columns of the delim_scan to the projection list
@@ -529,8 +528,8 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 			}
 		}
 		if (!perform_delim) {
-			// if we are not performing the duplicate elimination, we have only added the row_id column to the grouping
-			// operators in this case, we push a FIRST aggregate for each of the remaining expressions
+			// 如果我们不执行去重操作，我们只将 row_id 列添加到了分组操作中
+			// 在这种情况下，我们会为剩余的每个表达式推入一个 FIRST 聚合函数
 			delim_table_index = aggr.aggregate_index;
 			delim_column_offset = aggr.expressions.size();
 			delim_data_offset = aggr.groups.size();
@@ -563,9 +562,8 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 			}
 		}
 		if (ungrouped_join) {
-			// we have to perform an INNER or LEFT OUTER JOIN between the result of this aggregate and the delim scan
-			// this does not always have to be a LEFT OUTER JOIN, depending on whether aggr.expressions return
-			// NULL or a value
+			// 我们必须在这个聚合结果与 delim scan 之间执行 INNER JOIN 或 LEFT OUTER JOIN
+			// 这并不总是一个 LEFT OUTER JOIN，具体取决于 aggr.expressions 是返回 NULL 还是返回一个值
 			JoinType join_type = JoinType::INNER;
 			if (any_join || !parent_propagate_null_values) {
 				join_type = JoinType::LEFT;
@@ -592,8 +590,8 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 				                   ExpressionType::COMPARE_NOT_DISTINCT_FROM);
 				join->conditions.push_back(std::move(cond));
 			}
-			// for any COUNT aggregate we replace references to the column with: CASE WHEN COUNT(*) IS NULL THEN 0
-			// ELSE COUNT(*) END
+			// 对于任何 COUNT 聚合，我们将对该列的引用替换为：
+			// CASE WHEN COUNT(*) IS NULL THEN 0 ELSE COUNT(*) END
 			for (idx_t i = 0; i < aggr.expressions.size(); i++) {
 				D_ASSERT(aggr.expressions[i]->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
 				auto &bound = aggr.expressions[i]->Cast<BoundAggregateExpression>();
@@ -646,9 +644,9 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 			delim_offset += plan->children[0]->GetColumnBindings().size();
 			return plan;
 		}
-		// both sides have correlation
-		// turn into an inner join
-		// correctly use left child's delim_offset so execute left child as the last one
+		// 两侧都有关联引用
+		// 转换为内连接
+		// 正确使用左子节点的 delim_offset，以便最后执行左子节点
 		auto join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
 		plan->children[1] =
 		    PushDownDependentJoinInternal(std::move(plan->children[1]), parent_propagate_null_values, lateral_depth);

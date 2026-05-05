@@ -53,24 +53,26 @@ optional_ptr<QueryEdge> QueryGraphEdges::GetQueryEdge(JoinRelationSet &left) {
 	return info;
 }
 
+// 创建一条边，就是查Trie树，为某节点添加neighbor（表示边的另一端）
+// 很明显，这是一个单向边，还需要从另外一个方向再调用一次，构成双向边。
 void QueryGraphEdges::CreateEdge(JoinRelationSet &left, JoinRelationSet &right, optional_ptr<FilterInfo> filter_info) {
 	D_ASSERT(left.count > 0 && right.count > 0);
-	// find the EdgeInfo corresponding to the left set
+	// 查找与左侧集合对应的 EdgeInfo
 	auto info = GetQueryEdge(left);
-	// now insert the edge to the right relation, if it does not exist
+	// 现在将边插入到右侧关系中，如果该边尚不存在的话
 	for (idx_t i = 0; i < info->neighbors.size(); i++) {
 		if (info->neighbors[i]->neighbor == &right) {
 			if (filter_info) {
-				// neighbor already exists just add the filter, if we have any
+				// 邻接节点已存在，只需添加过滤条件（如果有的话）
 				info->neighbors[i]->filters.push_back(filter_info);
 			}
 			return;
 		}
 	}
-	// neighbor does not exist, create it
+	// 邻接节点不存在，创建它
 	auto n = make_uniq<NeighborInfo>(&right);
-	// if the edge represents a cross product, filter_info is null. The easiest way then to determine
-	// if an edge is for a cross product is if the filters are empty
+	// 如果该边表示笛卡尔积（cross product），则 filter_info 为 null。
+	// 因此，判断一条边是否用于笛卡尔积的最简单方法就是检查其过滤条件是否为空。
 	if (info && filter_info) {
 		n->filters.push_back(filter_info);
 	}

@@ -109,13 +109,13 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
                                                              unordered_set<TableIndex> &right_bindings) {
 	auto &join = op->Cast<LogicalJoin>();
 	FilterPushdown left_pushdown(optimizer, convert_mark_joins), right_pushdown(optimizer, convert_mark_joins);
-	// for a comparison join we create a FilterCombiner that checks if we can push conditions on LHS join conditions
-	// into the RHS of the join
-	FilterCombiner filter_combiner(optimizer);
+	// 对于比较连接，我们创建一个FilterCombiner，用于检查是否可以将左侧连接条件上的过滤条件（LHS join conditions）
+	// 推送到连接的右侧（the RHS of the join）
+	FilterCombiner filter_combiner(optimizer); // 这是一个新的 FilterCombiner，收集本连接中的条件
 	const auto isComparison = (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
 	                           op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN);
 	if (isComparison) {
-		// add all comparison conditions
+		// add all comparison conditions xm: 加入的是当前连接的连接条件
 		auto &comparison_join = op->Cast<LogicalComparisonJoin>();
 		for (auto &cond : comparison_join.conditions) {
 			if (cond.IsComparison()) {
@@ -130,12 +130,12 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 	vector<unique_ptr<Filter>> remaining_filters;
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto side = JoinSide::GetJoinSide(filters[i]->bindings, left_bindings, right_bindings);
-		if (side == JoinSide::LEFT) {
+		if (side == JoinSide::LEFT) { // xm: 左连接上面的只依赖左侧的过滤条件，我们可以直接推送到左侧
 			// bindings match left side
 			// we can push the filter into the left side
 			if (isComparison) {
-				// we MIGHT be able to push it down the RHS as well, but only if it is a comparison that matches the
-				// join predicates we use the FilterCombiner to figure this out add the expression to the FilterCombiner
+				// 我们可能也能够将它下推到右侧，但仅当它是一个与连接谓词匹配的比较操作时
+				// 我们使用FilterCombiner来确定这一点，将表达式添加到FilterCombiner中 xm: L.id = R.id，L.id = 5
 				filter_combiner.AddFilter(filters[i]->filter->Copy());
 			}
 			left_pushdown.filters.push_back(std::move(filters[i]));
@@ -143,17 +143,16 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 			filters.erase_at(i);
 			i--;
 		} else if (op->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
-			// bindings match right side or both sides: we cannot directly push it into the right
-			// however, if the filter removes rows with null values from the RHS we can turn the left outer join
-			// in an inner join, and then push down as we would push down an inner join
-			// Edit: This is only possible if the bindings match BOTH sides, so the filter can be pushed down to both
-			// children. If the filter can only be applied to the right side, and the filter filters
-			// all tuples, then the inner join cannot be converted.
+			// bindings匹配右侧或两侧：我们不能直接将其下推到右侧
+			// 然而，如果过滤器从右侧移除了包含空值的行，我们可以将左外连接
+			// 转换为内连接，然后像内连接那样进行下推
+			// 编辑：这只在bindings匹配两侧时才可能，这样过滤器可以下推到两个子节点
+			// 如果过滤器只能应用于右侧，且过滤器过滤了所有元组，那么内连接就无法转换。
 			if (FilterRemovesNull(optimizer.context, optimizer.rewriter, filters[i]->filter.get(), right_bindings)) {
 				// the filter removes NULL values, turn it into an inner join
 				join.join_type = JoinType::INNER;
-				// now we can do more pushdown
-				// move all filters we added to the left_pushdown back into the filter list
+				// 现在我们可以进行更多的下推操作
+				// 将我们添加到 left_pushdown 的所有过滤器移回过滤器列表中
 				for (auto &left_filter : left_pushdown.filters) {
 					filters.push_back(std::move(left_filter));
 				}
@@ -169,20 +168,24 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 			i--;
 		}
 	}
-	// finally we check the FilterCombiner to see if there are any predicates we can push into the RHS
-	// we only added (1) predicates that have JoinSide::BOTH from the conditions, and
-	// (2) predicates that have JoinSide::LEFT from the filters
-	// we check now if this combination generated any new filters that are only on JoinSide::RIGHT
-	// this happens if, e.g. a join condition is (i=a) and there is a filter (i=500), we can then push the filter
-	// (a=500) into the RHS
-	filter_combiner.GenerateFilters([&](unique_ptr<Expression> filter) {
+	// xm: 现在，上面的谓词在remaining_filters中，连接条件在filter_combiner中，我们已经将所有可以直接下推到左侧的过滤器下推到了左侧
+	// 但是还没有往右侧下推
+
+	// 最后，我们检查FilterCombiner，查看是否有任何谓词可以下推到右侧表
+	// 我们只添加了：(1) 条件中具有JoinSide::BOTH的谓词，以及
+	// (2) 过滤器中具有JoinSide::LEFT的谓词
+	// 现在我们检查这种组合是否生成了任何仅作用于JoinSide::RIGHT的新过滤器
+	// 这种情况会在例如：连接条件为 (i=a) 且存在过滤器 (i=500) 时发生，
+	// 此时我们可以将过滤器 (a=500) 下推到右侧表
+	filter_combiner.GenerateFilters([&](unique_ptr<Expression> filter) { // 这是本层的 FilterCombiner，生成条件并尝试下推
 		if (JoinSide::GetJoinSide(*filter, left_bindings, right_bindings) == JoinSide::RIGHT) {
-			right_pushdown.AddFilter(std::move(filter));
+			right_pushdown.AddFilter(std::move(filter)); // 下推到右侧
 		}
 	});
-	right_pushdown.GenerateFilters();
+	right_pushdown.GenerateFilters(); // 这是右子树的FilterCombiner，FilterCombiner -> 右侧filters
 	op->children[0] = left_pushdown.Rewrite(std::move(op->children[0]));
 
+	// 接下来检查一下，连接条件是否一定为false，如果是的话，可以简化成： 左子树 cross join null行
 	bool rewrite_right = true;
 	bool has_unsatisfiable_condition = false;
 

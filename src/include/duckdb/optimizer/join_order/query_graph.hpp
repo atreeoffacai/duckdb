@@ -33,7 +33,7 @@ struct NeighborInfo {
 	vector<optional_ptr<FilterInfo>> filters;
 };
 
-//! The QueryGraph contains edges between relations and allows edges to be created/queried
+//! 查询图（The QueryGraph）包含关系（relations）之间的边，并允许创建/查询边
 class QueryGraphEdges {
 public:
 	//! Contains a node with info about neighboring relations and child edge infos

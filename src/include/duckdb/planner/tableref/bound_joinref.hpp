@@ -33,7 +33,7 @@ public:
 	unique_ptr<Expression> condition;
 	//! Duplicate Eliminated Columns (if any)
 	vector<unique_ptr<Expression>> duplicate_eliminated_columns;
-	//! If the delim is flipped
+	//! If the delim is flipped(翻转)
 	bool delim_flipped;
 	//! The join type
 	JoinType type;

@@ -39,7 +39,7 @@ public:
 
 	SubqueryType subquery_type = SubqueryType::INVALID;
 	bool perform_delim = true;
-	bool any_join = false;
+	bool any_join = false; // xm: 在标量子查询中设置为false，在EXISTS/ANY子查询中设置为true
 	bool propagate_null_values = true;
 	bool is_lateral_join = false;
 

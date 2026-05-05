@@ -29,27 +29,27 @@ struct JoinRelationSet {
 	static bool IsSubset(JoinRelationSet &super, JoinRelationSet &sub);
 };
 
-//! The JoinRelationTree is a structure holding all the created JoinRelationSet objects and allowing fast lookup on to
-//! them
+//! JoinRelationTree 是一个结构，用于保存所有已创建的 JoinRelationSet 对象，并允许对它们进行快速查找
+
 class JoinRelationSetManager {
 public:
-	//! Contains a node with a JoinRelationSet and child relations
-	// FIXME: this structure is inefficient, could use a bitmap for lookup instead (todo: profile)
+	//! 包含一个带有 JoinRelationSet 和子关系的节点
+	// FIXME: 此结构效率低下，可以使用位图（bitmap）进行查找（待办：性能分析）
 	struct JoinRelationTreeNode {
 		unique_ptr<JoinRelationSet> relation;
 		unordered_map<RelationIndex, unique_ptr<JoinRelationTreeNode>> children;
 	};
 
 public:
-	//! Create or get a JoinRelationSet from a single node with the given index
+	//! 从具有给定索引的单个节点创建或获取一个 JoinRelationSet
 	JoinRelationSet &GetJoinRelation(RelationIndex index);
-	//! Create or get a JoinRelationSet from a set of relation bindings
+	//! 从一组关系绑定创建或获取一个 JoinRelationSet
 	JoinRelationSet &GetJoinRelation(const unordered_set<RelationIndex> &bindings);
-	//! Create or get a JoinRelationSet from a (sorted, duplicate-free!) list of relations
+	//! 从关系列表（已排序、无重复！）创建或获取一个 JoinRelationSet
 	JoinRelationSet &GetJoinRelation(unsafe_unique_array<RelationIndex> relations, idx_t count);
-	//! Union two sets of relations together and create a new relation set
+	//! 合并两组关系并创建一个新的关系集合
 	JoinRelationSet &Union(JoinRelationSet &left, JoinRelationSet &right);
-	// //! Create the set difference of left \ right (i.e. all elements in left that are not in right)
+	// //! 创建左集合与右集合的差集（即左集合中不在右集合中的所有元素）
 	// JoinRelationSet *Difference(JoinRelationSet *left, JoinRelationSet *right);
 	string ToString() const;
 	void Print();

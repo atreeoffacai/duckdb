@@ -12,10 +12,10 @@
 
 namespace duckdb {
 
-//! LogicalUnconditionalJoin represents a join between two relations
-//! where the join condition is implicit (cross product, position, etc.)
+//! LogicalUnconditionalJoin 表示两个关系之间的连接，
+//! 其中连接条件是隐式的（笛卡尔积、位置等）
 class LogicalUnconditionalJoin : public LogicalOperator {
-public:
+public: // 给 LogicalUnconditionalJoin 这个类绑定一个全局唯一的标签，名字叫 TYPE。这个标签的值是 LOGICAL_INVALID
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_INVALID;
 
 public:

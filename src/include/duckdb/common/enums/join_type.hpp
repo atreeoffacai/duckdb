@@ -16,21 +16,17 @@ namespace duckdb {
 // Join Types
 //===--------------------------------------------------------------------===//
 enum class JoinType : uint8_t {
-	INVALID = 0, // invalid join type
-	LEFT = 1,    // left
-	RIGHT = 2,   // right
-	INNER = 3,   // inner
-	OUTER = 4,   // outer
-	SEMI = 5,    // LEFT SEMI join returns left side row ONLY if it has a join partner, no duplicates.
-	ANTI = 6,    // LEFT ANTI join returns left side row ONLY if it has NO join partner, no duplicates
-	MARK = 7,    // MARK join returns marker indicating whether or not there is a join partner (true), there is no join
-	             // partner (false)
-	SINGLE = 8,  // SINGLE join is like LEFT OUTER JOIN, BUT returns at most one join partner per entry on the LEFT side
-	             // (and NULL if no partner is found)
-	RIGHT_SEMI = 9, // RIGHT SEMI join is created by the optimizer when the children of a semi join need to be switched
-	                // so that the build side can be the smaller table
-	RIGHT_ANTI = 10 // RIGHT ANTI join is created by the optimizer when the children of an anti join need to be
-	                // switched so that the build side can be the smaller table
+	INVALID = 0, // 无效的连接类型
+	LEFT = 1,    // 左连接
+	RIGHT = 2,   // 右连接
+	INNER = 3,   // 内连接
+	OUTER = 4,   // 外连接
+	SEMI = 5,    // 左半连接仅在左侧行有连接伙伴时返回该行，无重复
+	ANTI = 6,    // 左反连接仅在左侧行没有连接伙伴时返回该行，无重复
+	MARK = 7,    // 标记连接返回一个标记，指示是否存在连接伙伴（true）或不存在连接伙伴（false）
+	SINGLE = 8,  // 单一连接类似于左外连接，但每条左侧记录最多返回一个连接伙伴（如果没有找到伙伴则返回 NULL）
+	RIGHT_SEMI = 9, // 右半连接由优化器创建，当半连接的子节点需要交换时，以便构建侧可以是较小的表
+	RIGHT_ANTI = 10 // 右反连接由优化器创建，当反连接的子节点需要交换时，以便构建侧可以是较小的表
 };
 
 //! True if join is left or full outer join

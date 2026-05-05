@@ -98,6 +98,7 @@ bool RelationManager::CrossProductWithRelationAllowed(idx_t relation_id) {
 }
 
 // xm comment: 这个函数的含义是：需不需要把当前这个op当成一个relaton来处理？这里的relation是指超图中的一个普通节点。
+// 面向已经确定有单个子节点的算子
 static bool OperatorNeedsRelation(LogicalOperatorType op_type) {
 	switch (op_type) {
 	case LogicalOperatorType::LOGICAL_PROJECTION: // 改变了列，比如生成了新的列；所以把这个操作符及其子树当成一个relation来处理；
@@ -114,7 +115,7 @@ static bool OperatorNeedsRelation(LogicalOperatorType op_type) {
 	}
 }
 
-// 在LogicalOperatorType层面指明哪一些操作符是不能被重排序的
+// 在LogicalOperatorType层面指明哪一些操作符是不能被重排序的，面向有双子节点的算子
 static bool OperatorIsNonReorderable(LogicalOperatorType op_type) {
 	switch (op_type) {
 	case LogicalOperatorType::LOGICAL_UNION: // 并集
@@ -132,8 +133,8 @@ bool ExpressionContainsColumnRef(const Expression &root_expr) {
 	bool contains_column_ref = false;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(root_expr,
 	                                                              [&](const BoundColumnRefExpression &colref) {
-	// Here you have a filter on a single column in a table. Return a binding for the column
-	// being filtered on so the filter estimator knows what HLL count to pull
+	// 这里你有一个对表中单列的过滤器。返回被过滤列的绑定，
+	// 以便过滤器估计器知道要拉取哪个HLL计数。
 #ifdef DEBUG
 		                                                              (void)colref.depth;
 		                                                              D_ASSERT(colref.depth == 0);
@@ -181,6 +182,7 @@ static bool JoinIsReorderable(LogicalOperator &op) {
 	return false;
 }
 
+// 从 当前 op 开始，沿着单子树往下走，直到遇到一个LOGICAL_COMPARISON_JOIN算子或者没有子节点的算子为止；
 static bool HasNonReorderableChild(LogicalOperator &op) {
 	LogicalOperator *tmp = &op;
 	while (tmp->children.size() == 1) {
@@ -222,6 +224,10 @@ void RelationManager::AddRelationWithChildren(JoinOrderOptimizer &optimizer, Log
 	AddRelation(input_op, parent, child_stats);
 }
 
+// xm comment: 函数的返回值代表能否重排，true代表可以重排，false代表不可以重排；
+// 更详细一点，现在是DPHyp的“准备阶段”，返回true表示一切顺利，返回 false 表示遇到了问题。
+// filter_operators 用来保存在此过程中收集到的带 condition 的算子：LOGICAL_FILTER，可重排的 Join。
+// 假如这个函数形成了多个relation，那么这些relation在初始计划树中都通过哪些operator相连接？一定是Join
 bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, LogicalOperator &input_op,
                                            vector<reference<LogicalOperator>> &filter_operators,
                                            optional_ptr<LogicalOperator> parent) {
@@ -232,7 +238,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	while (op->children.size() == 1 && !OperatorNeedsRelation(op->type)) {
 		if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
 			if (HasNonReorderableChild(*op)) { // 判断这个filter算子是否被视为一个relation
-				datasource_filters.push_back(*op); // 如果被视为一个relation了，就把它加入datasource_filters列表中，后续在计算relation的stats时会用到这个列表中的filter来调整stats
+				datasource_filters.push_back(*op); // 只是为了修正基数，DP是不会把这个filter算子当成一个relation来处理的；可是filter算子下面那个算子可能会被当成一个relation
 			}
 			filter_operators.push_back(*op);
 		}
@@ -255,7 +261,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			non_reorderable_operation = true;
 		}
 	}
-	if (non_reorderable_operation) {
+	if (non_reorderable_operation) { // non_reorderable_operation 特指二元操作符
 		// 我们遇到了一个不可重排序的操作（如集合操作或非内连接）。
 		// 目前我们还不会对非内连接进行重排序，
 		// 但我们希望在其周围扩展可能的连接图（join graph）。
@@ -281,13 +287,13 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			combined_stats.cardinality = (idx_t)MaxValue(
 			    double(combined_stats.cardinality) * RelationStatisticsHelper::DEFAULT_SELECTIVITY, (double)1);
 		}
-		AddRelation(input_op, parent, combined_stats);
+		AddRelation(input_op, parent, combined_stats);// 把这个input_op看成一个relation，包括前面穿透的算子
 		return true;
 	}
 
 	switch (op->type) {
-	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
-		// optimize children
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: { // OperatorNeedsRelation
+		// 分组聚合也是不可以重排的，要当成一个relation来处理，但是其基数估计和“non_reorderable_operation”系列不同，所以要单独处理
 		RelationStats child_stats;
 		auto child_optimizer = optimizer.CreateChildOptimizer();
 		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
@@ -300,11 +306,11 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			                                                     RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 		}
 		ModifyStatsIfLimit(limit_op.get(), child_stats);
-		AddAggregateOrWindowRelation(input_op, parent, operator_stats, op->type);
+		AddAggregateOrWindowRelation(input_op, parent, operator_stats, op->type); // 特殊的AddRelation
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_WINDOW: {
-		// optimize children
+	case LogicalOperatorType::LOGICAL_WINDOW: { // OperatorNeedsRelation
+		// 类似于前面的分组聚合
 		RelationStats child_stats;
 		auto child_optimizer = optimizer.CreateChildOptimizer();
 		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
@@ -317,44 +323,46 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			                                                     RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 		}
 		ModifyStatsIfLimit(limit_op.get(), child_stats);
-		AddAggregateOrWindowRelation(input_op, parent, operator_stats, op->type);
+		AddAggregateOrWindowRelation(input_op, parent, operator_stats, op->type); // 特殊的AddRelation
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_UNNEST: {
-		// optimize children of unnest
+	case LogicalOperatorType::LOGICAL_UNNEST: { // OperatorNeedsRelation
+		// 那unnest及其子树当成一个relation
+		// 不过包装成了函数AddRelationWithChildren(),包装的原因是，LOGICAL_GET也用了这个逻辑
 		RelationStats child_stats;
 		AddRelationWithChildren(optimizer, *op, input_op, parent, child_stats, limit_op, datasource_filters);
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: { // 可重排的比较连接
 		auto &join = op->Cast<LogicalComparisonJoin>();
-		// Adding relations of the left side to the current join order optimizer
+		// 将左侧的关系添加到当前的连接顺序优化器中
 		bool can_reorder_left = ExtractJoinRelations(optimizer, *op->children[0], filter_operators, op);
 		bool can_reorder_right = true;
-		// For semi & anti joins, you only reorder relations in the left side of the join.
-		// We do not want to reorder a relation A into the right side because then all column bindings A from A will be
-		// lost after the semi or anti join
+		// 对于半连接（semi join）和反连接（anti join），你只能对连接左侧的关系进行重排序。
+		// 我们不希望将某个关系 A 重排到右侧，因为那样的话，
+		// 所有来自 A 的列绑定（column bindings）在半连接或反连接之后都会丢失。
 
-		// We cannot reorder a relation B out of the right side because any filter/join in the right side
-		// between a relation B and another RHS relation will be invalid. The semi join will remove
-		// all right column bindings,
+		// 同样，我们也不能将某个关系 B 从右侧移出，
+		// 理由如下：半连接会移除所有右侧的列绑定，一旦关系 B 从右侧移出，右侧中关系 B 与其他右侧关系之间的任何过滤条件或连接条件都将变得无效（那些列消失了）。
 
-		// So we treat the right side of left join as its own relation so no relations
-		// are pushed into the right side, or taken out of the right side.
+		// 因此，我们将左连接的右侧视为一个独立的关系，
+		// 这样就不会有关系被推入右侧，也不会有关系被从右侧移出。（重点）
+		// （xm: 把右边打包成一个relation，就可以保证：右边不会有关系出去，也不会有关系进来。但是光凭这来保证join Reorder的正确性还不够，
+		// 还需要构建对应的超边来约束，详见ExtractEdges)
 		if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI) {
 			RelationStats child_stats;
 			// optimize the child and copy the stats
 			auto child_optimizer = optimizer.CreateChildOptimizer();
 			op->children[1] = child_optimizer.Optimize(std::move(op->children[1]), &child_stats);
-			AddRelation(*op->children[1], op, child_stats);
-			// remember that if a cross product needs to be forced, it cannot be forced
-			// across the children of a semi or anti join
+			AddRelation(*op->children[1], op, child_stats); // 优化右侧，并把整个右侧看成一个relation
+			// 请注意，如果需要强制执行笛卡尔积（cross product），
+			// 则不能在半连接（semi join）或反连接（anti join）的子节点之间强制执行。
 			no_cross_product_relations.insert(relations.size() - 1);
-			auto right_child_bindings = op->children[1]->GetColumnBindings();
+			auto right_child_bindings = op->children[1]->GetColumnBindings(); // AddRelation已经为基表建立了映射，但是这里为了防止有新的生成列不在其中，又根据列进行了映射
 			for (auto &bindings : right_child_bindings) {
-				relation_mapping[bindings.table_index] = RelationIndex(relations.size() - 1);
+				relation_mapping[bindings.table_index] = RelationIndex(relations.size() - 1); 
 			}
-		} else {
+		} else { // 普通连接
 			can_reorder_right = ExtractJoinRelations(optimizer, *op->children[1], filter_operators, op);
 		}
 		return can_reorder_left && can_reorder_right;
@@ -364,15 +372,15 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		bool can_reorder_right = ExtractJoinRelations(optimizer, *op->children[1], filter_operators, op);
 		return can_reorder_left && can_reorder_right;
 	}
-	case LogicalOperatorType::LOGICAL_DUMMY_SCAN: {
+	case LogicalOperatorType::LOGICAL_DUMMY_SCAN: { // 假表，但是基数被设置为1，要当成一个relation来处理
 		auto &dummy_scan = op->Cast<LogicalDummyScan>();
 		auto stats = RelationStatisticsHelper::ExtractDummyScanStats(dummy_scan, context);
 		AddRelation(input_op, parent, stats);
 		return true;
 	}
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: {
-		// base table scan, add to set of relations.
-		// create empty stats for dummy scan or logical expression get
+		// 基表扫描，将其加入关系集合中。
+		// 为虚拟扫描（dummy scan）或逻辑表达式获取创建空的统计信息。
 		auto &expression_get = op->Cast<LogicalExpressionGet>();
 		auto stats = RelationStatisticsHelper::ExtractExpressionGetStats(expression_get, context);
 		AddRelation(input_op, parent, stats);
@@ -381,17 +389,17 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	case LogicalOperatorType::LOGICAL_GET: {
 		// TODO: Get stats from a logical GET
 		auto &get = op->Cast<LogicalGet>();
-		// this is a get that *most likely* has a function (like unnest or json_each).
-		// there are new bindings for output of the function, but child bindings also exist, and can
-		// be used in joins
-		if (!op->children.empty()) {
+		// 这是一个“Get”操作，*很可能*包含一个函数（例如 unnest 或 json_each）。
+		// 该函数的输出会引入新的绑定（bindings），但子节点的绑定也依然存在，
+		// 并可用于连接（joins）操作。
+		if (!op->children.empty()) { // Get竟然可以有子节点，把其当成一个relation来处理
 			RelationStats child_stats;
 			AddRelationWithChildren(optimizer, *op, input_op, parent, child_stats, limit_op, datasource_filters);
 			return true;
 		}
 		auto stats = RelationStatisticsHelper::ExtractGetStats(get, context);
-		// if there is another logical filter that could not be pushed down into the
-		// table scan, apply another selectivity.
+		// 如果还存在另一个无法下推到表扫描中的逻辑过滤条件，
+		// 则应用另一个选择率（selectivity）。
 		get.SetEstimatedCardinality(stats.cardinality);
 		if (!datasource_filters.empty()) {
 			stats.cardinality =
@@ -401,7 +409,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		AddRelation(input_op, parent, stats);
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_PROJECTION: {
+	case LogicalOperatorType::LOGICAL_PROJECTION: { // OperatorNeedsRelation
 		RelationStats child_stats;
 		// optimize the child and copy the stats
 		auto child_optimizer = optimizer.CreateChildOptimizer();
@@ -414,7 +422,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		AddRelation(input_op, parent, proj_stats);
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_EMPTY_RESULT: {
+	case LogicalOperatorType::LOGICAL_EMPTY_RESULT: { // 行数为0的数据源，基数为0，要当成一个relation来处理
 		// optimize the child and copy the stats
 		auto &empty_result = op->Cast<LogicalEmptyResult>();
 		// Projection can create columns so we need to add them here
@@ -423,31 +431,31 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		AddRelation(input_op, parent, stats);
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
-	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
+	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: // 物化CTE
+	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: { // 递归CTE，这两个是二元算子
 		RelationStats lhs_stats;
-		// optimize the lhs child and copy the stats
+		// optimize the lhs child and copy the stats 优化左子树，一般这是CTE的定义部分
 		auto lhs_optimizer = optimizer.CreateChildOptimizer();
 		op->children[0] = lhs_optimizer.Optimize(std::move(op->children[0]), &lhs_stats);
-		// optimize the rhs child
+		// optimize the rhs child 优化右子树，一般这是CTE的引用部分
 		auto rhs_optimizer = optimizer.CreateChildOptimizer();
 		auto table_index = op->Cast<LogicalCTE>().table_index;
 
 		auto child_1_card = lhs_stats.stats_initialized ? lhs_stats.cardinality : 0;
-		rhs_optimizer.AddMaterializedCTEStats(table_index, std::move(lhs_stats));
+		rhs_optimizer.AddMaterializedCTEStats(table_index, std::move(lhs_stats)); // 右边肯定引用了左边定义的CTE，把左边的统计信息给右边使用
 		if (op->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 			rhs_optimizer.recursive_cte_indexes.insert(op->Cast<LogicalCTE>().table_index);
 		}
 		RelationStats rhs_stats;
-		op->children[1] = rhs_optimizer.Optimize(std::move(op->children[1]), &rhs_stats);
+		op->children[1] = rhs_optimizer.Optimize(std::move(op->children[1]), &rhs_stats); // 优化右子树
 
 		// create the stats for the CTE
 		auto child_2_card = rhs_stats.stats_initialized ? rhs_stats.cardinality : 0;
 
 		if (op->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
-			// we cannot really estimate the cardinality of a recursive CTE
-			// because we don't know how many times it will be executed
-			// we just assume it will be executed 1000 times
+		// 我们实际上无法准确估算递归CTE的基数（cardinality），
+		// 因为我们不知道它会被执行多少次，
+		// 因此我们简单地假设它将被执行1000次。
 			op->SetEstimatedCardinality(child_1_card + child_2_card * 1000);
 		} else if (op->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 			// for a materialized CTE, we just take the cardinality of the right children
@@ -456,7 +464,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 
 		return false;
 	}
-	case LogicalOperatorType::LOGICAL_CTE_REF: {
+	case LogicalOperatorType::LOGICAL_CTE_REF: { // 应用CTE的地方
 		auto &cte_ref = op->Cast<LogicalCTERef>();
 		auto cte_stats = optimizer.GetMaterializedCTEStats(cte_ref.cte_index);
 		cte_ref.SetEstimatedCardinality(cte_stats.cardinality);
@@ -468,15 +476,16 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		}
 		return true;
 	}
-	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN: { // 单独优化左侧，然后单独优化右侧，然后本层DPHpy取消......(return false)
 		auto &delim_join = op->Cast<LogicalComparisonJoin>();
 
-		// optimize LHS (duplicate-eliminated) child
+		// optimize LHS (duplicate-eliminated) child 单独优化左子树
 		RelationStats lhs_stats;
 		auto lhs_optimizer = optimizer.CreateChildOptimizer();
 		op->children[0] = lhs_optimizer.Optimize(std::move(op->children[0]), &lhs_stats);
 
 		// create dummy aggregation for the duplicate elimination
+		// 这是利用分区聚合来估算去重后的基数
 		auto dummy_aggr = make_uniq<LogicalAggregate>(TableIndex(DConstants::INVALID_INDEX - 1), TableIndex(),
 		                                              vector<unique_ptr<Expression>>());
 		dummy_aggr->grouping_sets.emplace_back();
@@ -487,8 +496,10 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		auto lhs_delim_stats = RelationStatisticsHelper::ExtractAggregationStats(*dummy_aggr, lhs_stats);
 
 		// optimize the other child, which will now have access to the stats
+		// 现在优化右子树
 		RelationStats rhs_stats;
 		auto rhs_optimizer = optimizer.CreateChildOptimizer();
+		// 【关键！】把假聚合算出来的统计情报交接给右侧优化器
 		rhs_optimizer.AddDelimScanStats(lhs_delim_stats);
 		op->children[1] = rhs_optimizer.Optimize(std::move(op->children[1]), rhs_stats);
 
@@ -524,16 +535,16 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 
 		return false;
 	}
-	case LogicalOperatorType::LOGICAL_DELIM_GET: {
-		// Used to not be possible to reorder these. We added reordering (without stats) before,
-		// but ran into terrible join orders (see internal issue #596), so we removed it again
-		// We now have proper statistics for DelimGets, and get an even better query plan for #596
+	case LogicalOperatorType::LOGICAL_DELIM_GET: { // 从 input_op 开始打包
+	// 以前无法对这些进行重排序。我们之前曾添加过重排序功能（但没有统计信息），
+	// 却导致了非常糟糕的连接顺序（参见内部问题 #596），因此又移除了该功能。
+	// 现在我们为 DelimGets 提供了准确的统计信息，从而为问题 #596 生成了更优的查询计划。
 		auto delim_scan_stats = optimizer.GetDelimScanStats();
 		op->SetEstimatedCardinality(delim_scan_stats.cardinality);
 		AddAggregateOrWindowRelation(input_op, parent, delim_scan_stats, op->type);
 		return true;
 	}
-	default:
+	default: // 典型代表 sample，可能是考虑到“随机”的特殊性
 		return false;
 	}
 }
@@ -572,14 +583,18 @@ bool RelationManager::ExtractBindings(Expression &expression, unordered_set<Rela
 	return can_reorder;
 }
 
+// 已知filter_operators要么来自filter算子，要么来自可重排的Join
+// 这里需要注意的是：
+// 对于filter算子，该函数会把该filter算子中的条件全部移除（方式是使用move转交所有权），也就是说，filter算子位置不变，但是是个空算子。
+// 对于搬空之后的filter，在生成物理算子的时候，会被删除。
 vector<unique_ptr<FilterInfo>> RelationManager::ExtractEdges(LogicalOperator &op,
                                                              vector<reference<LogicalOperator>> &filter_operators,
                                                              JoinRelationSetManager &set_manager) {
-	// now that we know we are going to perform join ordering we actually extract the filters, eliminating duplicate
-	// filters in the process
+	// 既然现在已经确定要执行连接顺序优化（join ordering），我们就真正地提取过滤条件，
+	// 并在此过程中消除重复的过滤条件。
 	vector<unique_ptr<FilterInfo>> filters_and_bindings;
 	expression_set_t filter_set;
-	for (auto &filter_op : filter_operators) {
+	for (auto &filter_op : filter_operators) { // 函数中的主循环，说明关注的过滤条件都在这里
 		auto &f_op = filter_op.get();
 		if (f_op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
 		    f_op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN) {
@@ -587,16 +602,17 @@ vector<unique_ptr<FilterInfo>> RelationManager::ExtractEdges(LogicalOperator &op
 			D_ASSERT(join.expressions.empty());
 			if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI) {
 				auto conjunction_expression = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
-				// create a conjunction expression for the semi join.
-				// It's possible multiple LHS relations have a condition in
-				// this semi join. Suppose we have ((A ⨝ B) ⋉ C). (example in test_4950.test)
-				// If the semi join condition has A.x = C.y AND B.x = C.z then we need to prevent a reordering
-				// that looks like ((A ⋉ C) ⨝ B)), since all columns from C will be lost after it joins with A,
-				// and the condition B.x = C.z will no longer be possible.
-				// if we make a conjunction expressions and populate the left set and right set with all
-				// the relations from the conditions in the conjunction expression, we can prevent invalid
-				// reordering.
-				for (auto &cond : join.conditions) {
+				// 为半连接（semi join）创建一个合取（conjunction）表达式。
+				// 在这个半连接中，可能存在多个左表（LHS）关系参与条件判断。
+				// 例如，在查询 ((A ⨝ B) ⋉ C) 中（参见 test_4950.test 示例），
+				// 如果半连接的条件是 A.x = C.y AND B.x = C.z，
+				// 那么我们必须防止重排序成类似 ((A ⋉ C) ⨝ B) 的形式，
+				// 因为在 A 与 C 进行半连接后，C 的所有列都会丢失，
+				// 导致条件 B.x = C.z 无法再被满足。
+				// 如果我们构造一个合取表达式，并将其中所有条件涉及的关系
+				// 分别填入左集合（left set）和右集合（right set），
+				// 就可以有效阻止这类非法的重排序。
+				for (auto &cond : join.conditions) { // 即 通过锁定谓词来限制重排（和创建超边限制重排的思想是一样的）
 					if (cond.IsComparison()) {
 						auto comparison = make_uniq<BoundComparisonExpression>(
 						    cond.GetComparisonType(), cond.GetLHS().Copy(), cond.GetRHS().Copy());
@@ -604,14 +620,12 @@ vector<unique_ptr<FilterInfo>> RelationManager::ExtractEdges(LogicalOperator &op
 					}
 				}
 
-				// create the filter info so all required LHS relations are present when reconstructing the
-				// join
+				// 创建过滤信息，以确保在重建连接（join）时所有必需的左表（LHS）关系都存在。
 				optional_ptr<JoinRelationSet> left_set;
 				optional_ptr<JoinRelationSet> right_set;
 				optional_ptr<JoinRelationSet> full_set;
-				// here we create a left_set that unions all relations from the left side of
-				// every expression and a right_set that unions all relations frmo the right side of a
-				// every expression (although this should always be 1).
+				// 在这里，我们创建一个 left_set，它合并了每个表达式左侧的所有关系；
+				// 同时创建一个 right_set，它合并了每个表达式右侧的所有关系（尽管这通常应该只包含一个关系）。
 				for (auto &bound_expr : conjunction_expression->children) {
 					D_ASSERT(bound_expr->GetExpressionClass() == ExpressionClass::BOUND_COMPARISON);
 					auto &comp = bound_expr->Cast<BoundComparisonExpression>();
@@ -635,9 +649,9 @@ vector<unique_ptr<FilterInfo>> RelationManager::ExtractEdges(LogicalOperator &op
 				D_ASSERT(right_set && right_set->count == 1);
 				D_ASSERT(full_set && full_set->count > 0);
 
-				// now we push the conjunction expressions
-				// In QueryGraphManager::GenerateJoins we extract each condition again and create a standalone join
-				// condition.
+				// 现在我们将这些合取（conjunction）表达式压入。
+				// 在 QueryGraphManager::GenerateJoins 中，我们会再次逐个提取每个条件，
+				// 并创建独立的连接（join）条件。
 				auto filter_info = make_uniq<FilterInfo>(std::move(conjunction_expression), *full_set,
 				                                         filters_and_bindings.size(), join.join_type);
 				filter_info->SetLeftSet(left_set);
@@ -645,7 +659,7 @@ vector<unique_ptr<FilterInfo>> RelationManager::ExtractEdges(LogicalOperator &op
 
 				filters_and_bindings.push_back(std::move(filter_info));
 			} else {
-				// can extract every inner join condition individually.
+				// 可以单独提取每一个内连接（inner join）条件。
 				for (auto &cond : join.conditions) {
 					unique_ptr<Expression> expr;
 					bool is_residual = false;
@@ -672,17 +686,17 @@ vector<unique_ptr<FilterInfo>> RelationManager::ExtractEdges(LogicalOperator &op
 				}
 			}
 
-			join.conditions.clear();
-		} else {
-			vector<unique_ptr<Expression>> leftover_expressions;
+			join.conditions.clear(); // 上面不是“掏空”，而是copy，所以这还需要clear一下；
+		} else { // 这里对应的是 filter算子，注意这里的JoinType默认是Inner
+			vector<unique_ptr<Expression>> leftover_expressions; // leftover: 剩下的
 			for (auto &expression : f_op.expressions) {
-				if (filter_set.find(*expression) == filter_set.end()) {
-					filter_set.insert(*expression);
+				if (filter_set.find(*expression) == filter_set.end()) { // 这两行是去重逻辑
+					filter_set.insert(*expression); // 标记已经处理过的过滤条件，避免重复处理
 					unordered_set<RelationIndex> bindings;
-					ExtractBindings(*expression, bindings);
+					ExtractBindings(*expression, bindings); // 提取表
 					if (bindings.empty()) {
-						// the filter is on a column that is not in our relational map. (example: limit_rownum)
-						// in this case we do not create a FilterInfo for it. (duckdb-internal/#1493)s
+						// 该过滤条件作用于一个不在我们关系映射中的列上（例如：limit_rownum）。
+						// 在这种情况下，我们不会为其创建 FilterInfo。（参见 duckdb-internal/#1493）
 						leftover_expressions.push_back(std::move(expression));
 						continue;
 					}

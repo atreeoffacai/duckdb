@@ -37,8 +37,9 @@ struct GenerateJoinRelation {
 	unique_ptr<LogicalOperator> op;
 };
 
-//! Filter info struct that is used by the cardinality estimator to set the initial cardinality
-//! but is also eventually transformed into a query edge.
+//! 供基数估计器（cardinality estimator）使用的过滤信息结构体，用于设置初始基数，
+//! 但最终也会被转换为一条查询边（query edge）。
+// xm: 注意这里的JoinType默认是Inner
 class FilterInfo {
 public:
 	FilterInfo(unique_ptr<Expression> filter, JoinRelationSet &set, idx_t filter_index,
@@ -61,9 +62,9 @@ public:
 	void SetRightSet(optional_ptr<JoinRelationSet> right_set_new);
 };
 
-//! The QueryGraphManager manages the process of extracting the reorderable and nonreorderable operations
-//! from the logical plan and creating the intermediate structures needed by the plan enumerator.
-//! When the plan enumerator finishes, the Query Graph Manger can then recreate the logical plan.
+//! QueryGraphManager（查询图管理器）负责管理从逻辑计划中提取可重排序和不可重排序操作的过程，
+//! 并创建计划枚举器所需的中间结构。
+//! 当计划枚举器完成时，查询图管理器可以重新创建逻辑计划。
 class QueryGraphManager {
 public:
 	explicit QueryGraphManager(ClientContext &context) : relation_manager(context), context(context) {
@@ -101,8 +102,8 @@ public:
 private:
 	vector<reference<LogicalOperator>> filter_operators;
 
-	//! Filter information including the column_bindings that join filters
-	//! used by the cardinality estimator to estimate distinct counts
+	//! 过滤器信息，包括连接过滤器的列绑定，
+	//! 由基数估计器用于估计不同值的数量
 	vector<unique_ptr<FilterInfo>> filters_and_bindings;
 
 	QueryGraphEdges query_graph;

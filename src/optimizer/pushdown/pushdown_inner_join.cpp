@@ -8,6 +8,7 @@ namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
 
+// xm: 对于内连接，收集连接条件，然后变成 笛卡尔积，去按照笛卡尔积的方式进行谓词下推
 unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<LogicalOperator> op,
                                                               unordered_set<TableIndex> &left_bindings,
                                                               unordered_set<TableIndex> &right_bindings) {
@@ -17,7 +18,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<Logical
 		op = PushFiltersIntoDelimJoin(std::move(op));
 		return FinishPushdown(std::move(op));
 	}
-	// inner join: gather all the conditions of the inner join and add to the filter list
+	// 内连接：收集内连接的所有条件并添加到过滤器列表中
 	if (op->type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
 		auto &any_join = join.Cast<LogicalAnyJoin>();
 		// any join: only one filter to add

@@ -15,8 +15,7 @@
 
 namespace duckdb {
 
-//! The FlattenDependentJoins class is responsible for pushing the dependent join down into the plan to create a
-//! flattened subquery
+//! FlattenDependentJoins 类负责将依赖连接推送到计划中，以创建扁平化的子查询
 struct FlattenDependentJoins {
 	FlattenDependentJoins(Binder &binder, const CorrelatedColumns &correlated, bool perform_delim = true,
 	                      bool any_join = false, optional_ptr<FlattenDependentJoins> parent = nullptr);
@@ -27,15 +26,14 @@ struct FlattenDependentJoins {
 	                                        idx_t lateral_depth = 0);
 
 private:
-	//! Detects which Logical Operators have correlated expressions that they are dependent upon, filling the
-	//! has_correlated_expressions map.
+	//! 检测哪些逻辑操作符具有它们所依赖的相关表达式，并填充 has_correlated_expressions 映射。
 	bool DetectCorrelatedExpressions(LogicalOperator &op, bool lateral = false, idx_t lateral_depth = 0,
 	                                 bool parent_is_dependent_join = false);
 
-	//! Mark entire subtree of Logical Operators as correlated by adding them to the has_correlated_expressions map.
+	//! 通过将整个逻辑操作符子树添加到 has_correlated_expressions 映射中，将其标记为相关。
 	bool MarkSubtreeCorrelated(LogicalOperator &op, TableIndex cte_index);
 
-	//! Push the dependent join down a LogicalOperator
+	//! 将依赖连接向下推送到逻辑操作符中
 	unique_ptr<LogicalOperator> PushDownDependentJoin(unique_ptr<LogicalOperator> plan,
 	                                                  bool propagates_null_values = true, idx_t lateral_depth = 0);
 

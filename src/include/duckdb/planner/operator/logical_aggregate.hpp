@@ -32,9 +32,9 @@ public:
 	//! The table index for the GROUPING function calls of the LogicalAggregate
 	TableIndex groupings_index;
 	//! The set of groups (optional).
-	vector<unique_ptr<Expression>> groups;
+	vector<unique_ptr<Expression>> groups; // group by后面的表达式
 	//! The set of grouping sets (optional).
-	vector<GroupingSet> grouping_sets;
+	vector<GroupingSet> grouping_sets; // 常规之后一个，但是遇见RollUp之后就有多个
 	//! The list of grouping function calls (optional)
 	vector<unsafe_vector<ProjectionIndex>> grouping_functions;
 	//! Group statistics (optional)

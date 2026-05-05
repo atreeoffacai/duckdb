@@ -6,6 +6,7 @@ namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
 
+// 谓词要么被下推到某一侧，要么被成为连接条件
 unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->children.size() > 1);
 	FilterPushdown left_pushdown(optimizer, convert_mark_joins), right_pushdown(optimizer, convert_mark_joins);
@@ -58,7 +59,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<Logi
 		if (op->has_estimated_cardinality) {
 			// set the estimated cardinality of the new operator
 			new_op->SetEstimatedCardinality(op->estimated_cardinality);
-			if (new_op->type == LogicalOperatorType::LOGICAL_FILTER) {
+			if (new_op->type == LogicalOperatorType::LOGICAL_FILTER) { // xm: 这个检查好像永远也不会通过
 				// if the new operators are Filter + ComparisonJoin, also set the estimated cardinality for the join
 				D_ASSERT(new_op->children[0]->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN);
 				new_op->children[0]->SetEstimatedCardinality(op->estimated_cardinality);

@@ -143,40 +143,41 @@ BoundStatement Binder::Bind(QueryNode &node) {
 	return BindNode(node);
 }
 
+// xm: 解析并绑定 SQL 查询中的 FROM 子句
 BoundStatement Binder::Bind(TableRef &ref) {
 	BoundStatement result;
 	switch (ref.type) {
-	case TableReferenceType::BASE_TABLE:
+	case TableReferenceType::BASE_TABLE: // 基表
 		result = Bind(ref.Cast<BaseTableRef>());
 		break;
-	case TableReferenceType::JOIN:
+	case TableReferenceType::JOIN: // join 节点
 		result = Bind(ref.Cast<JoinRef>());
 		break;
-	case TableReferenceType::SUBQUERY:
+	case TableReferenceType::SUBQUERY: // 子查询
 		result = Bind(ref.Cast<SubqueryRef>());
 		break;
-	case TableReferenceType::EMPTY_FROM:
+	case TableReferenceType::EMPTY_FROM: // 空表
 		result = Bind(ref.Cast<EmptyTableRef>());
 		break;
-	case TableReferenceType::TABLE_FUNCTION:
+	case TableReferenceType::TABLE_FUNCTION: // 表函数
 		result = Bind(ref.Cast<TableFunctionRef>());
 		break;
-	case TableReferenceType::EXPRESSION_LIST:
+	case TableReferenceType::EXPRESSION_LIST: // 表达式列表
 		result = Bind(ref.Cast<ExpressionListRef>());
 		break;
-	case TableReferenceType::COLUMN_DATA:
+	case TableReferenceType::COLUMN_DATA: // 列数据
 		result = Bind(ref.Cast<ColumnDataRef>());
 		break;
-	case TableReferenceType::PIVOT:
+	case TableReferenceType::PIVOT: // 透视表
 		result = Bind(ref.Cast<PivotRef>());
 		break;
-	case TableReferenceType::SHOW_REF:
+	case TableReferenceType::SHOW_REF: // SHOW 命令引用
 		result = Bind(ref.Cast<ShowRef>());
 		break;
-	case TableReferenceType::DELIM_GET:
+	case TableReferenceType::DELIM_GET: // 相关/受限获取
 		result = Bind(ref.Cast<DelimGetRef>());
 		break;
-	case TableReferenceType::BOUND_TABLE_REF:
+	case TableReferenceType::BOUND_TABLE_REF: // 已绑定表引用
 		result = Bind(ref.Cast<BoundRefWrapper>());
 		break;
 	case TableReferenceType::CTE:

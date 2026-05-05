@@ -116,12 +116,12 @@ static bool IsJoinTypeCondition(const JoinRefType ref_type, const ExpressionType
 	switch (ref_type) {
 	case JoinRefType::ASOF:
 		switch (expr_type) {
-		case ExpressionType::COMPARE_EQUAL:
-		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-		case ExpressionType::COMPARE_GREATERTHAN:
-		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		case ExpressionType::COMPARE_LESSTHAN:
+		case ExpressionType::COMPARE_EQUAL: // =
+		case ExpressionType::COMPARE_NOT_DISTINCT_FROM: // Not Distinct From
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO: // >=
+		case ExpressionType::COMPARE_GREATERTHAN: // >
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO: // <=
+		case ExpressionType::COMPARE_LESSTHAN: // <
 			return true;
 		default:
 			return false;
@@ -131,17 +131,17 @@ static bool IsJoinTypeCondition(const JoinRefType ref_type, const ExpressionType
 	}
 }
 
-//! Check an expression is a usable comparison expression
+//! 检查一个表达式是否为可用的比较表达式
 static bool IsComparisonExpression(const Expression &expr) {
 	switch (expr.GetExpressionType()) {
-	case ExpressionType::COMPARE_EQUAL:
-	case ExpressionType::COMPARE_NOTEQUAL:
-	case ExpressionType::COMPARE_LESSTHAN:
-	case ExpressionType::COMPARE_GREATERTHAN:
-	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-	case ExpressionType::COMPARE_DISTINCT_FROM:
+	case ExpressionType::COMPARE_EQUAL: // = 
+	case ExpressionType::COMPARE_NOTEQUAL: // !=
+	case ExpressionType::COMPARE_LESSTHAN: // <
+	case ExpressionType::COMPARE_GREATERTHAN: // >
+	case ExpressionType::COMPARE_LESSTHANOREQUALTO: // <=
+	case ExpressionType::COMPARE_GREATERTHANOREQUALTO: // >=
+	case ExpressionType::COMPARE_NOT_DISTINCT_FROM: // Not Distinct From
+	case ExpressionType::COMPARE_DISTINCT_FROM: // Distinct From
 		return true;
 	default:
 		return false;
@@ -171,7 +171,7 @@ static bool CreateJoinCondition(Expression &expr, const unordered_set<TableIndex
 	return false;
 }
 
-//! Extract join conditions, pushing single-side filters to children when it's safe
+//! 提取连接条件，在安全的情况下将单侧过滤器下推到子节点
 void LogicalComparisonJoin::ExtractJoinConditions(ClientContext &context, JoinType type, JoinRefType ref_type,
                                                   unique_ptr<LogicalOperator> &left_child,
                                                   unique_ptr<LogicalOperator> &right_child,
@@ -182,28 +182,28 @@ void LogicalComparisonJoin::ExtractJoinConditions(ClientContext &context, JoinTy
 	for (auto &expr : expressions) {
 		auto side = JoinSide::GetJoinSide(*expr, left_bindings, right_bindings);
 
-		if (side == JoinSide::NONE) {
+		if (side == JoinSide::NONE) { // 常量表达式，尽量消除它
 			if (CanEliminate(context, type, expr)) {
 				continue;
 			}
-		} else if (side == JoinSide::LEFT) {
+		} else if (side == JoinSide::LEFT) { // 单测过滤条件，往单测处下推
 			if (CanPushToLeftChild(type, ref_type)) {
 				PushFilterToChild(left_child, expr);
 				continue;
 			}
-		} else if (side == JoinSide::RIGHT) {
+		} else if (side == JoinSide::RIGHT) { // 单测过滤条件，往单测处下推
 			if (CanPushToRightChild(type, ref_type)) {
 				PushFilterToChild(right_child, expr);
 				continue;
 			}
-		} else if (side == JoinSide::BOTH) {
+		} else if (side == JoinSide::BOTH) { // 双边引用条件
 			if (IsComparisonExpression(*expr) && IsJoinTypeCondition(ref_type, expr->GetExpressionType()) &&
 			    CreateJoinCondition(*expr, left_bindings, right_bindings, conditions)) {
 				continue;
 			}
 		}
 
-		conditions.emplace_back(std::move(expr));
+		conditions.emplace_back(std::move(expr)); // 这种JoinCondition就是INVALID，是一个奇怪的条件
 	}
 }
 
@@ -230,12 +230,16 @@ void LogicalComparisonJoin::ExtractJoinConditions(ClientContext &context, JoinTy
 	return ExtractJoinConditions(context, type, ref_type, left_child, right_child, expressions, conditions);
 }
 
-//! Create the join operator based on conditions and join type
+//! 根据条件和连接类型创建连接操作符
+// JoinType (连接类型)：决定了结果集长什么样，即如何处理匹配和不匹配的行。
+// 比如 INNER、LEFT、RIGHT、FULL OUTER、SEMI、ANTI 等。它是经典关系代数中的概念。
+// JoinRefType (连接引用类型/语义类型)：决定了这个连接的特殊业务语义或语法来源。
+// 它告诉绑定器（Binder）这个 Join 是不是某种带有特殊匹配规则的变体。
 unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, JoinRefType ref_type,
                                                               unique_ptr<LogicalOperator> left_child,
                                                               unique_ptr<LogicalOperator> right_child,
                                                               vector<JoinCondition> conditions) {
-	// separate comparison and non-comparison conditions for validation
+	// 为验证目的，分离比较条件和非比较条件： separate comparison and non-comparison conditions for validation
 	vector<JoinCondition> comparison_conditions;
 	vector<JoinCondition> non_comparison_conditions;
 	for (auto &cond : conditions) {
@@ -246,13 +250,13 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, Joi
 		}
 	}
 
-	// validate ASOF join conditions
+	// 取消asof，如果不取消，验证asof是否合法
 	auto is_asof = (ref_type == JoinRefType::ASOF);
 	if (is_asof) {
 		switch (type) {
 		case JoinType::RIGHT:
 		case JoinType::OUTER:
-			//	We can't (yet) support arbitrary predicates with some ASOF joins
+			// 对于某些ASOF连接，我们（目前）还不能支持任意的谓词条件
 			if (!non_comparison_conditions.empty()) {
 				throw NotImplementedException("Unsupported ASOF JOIN type (%s) with arbitrary predicate",
 				                              EnumUtil::ToChars(type));
@@ -260,25 +264,26 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, Joi
 			break;
 		case JoinType::SEMI:
 		case JoinType::ANTI:
-			//	For these join types, we can use a regular join because the RHS match is not important
-			//	But we will verify the requirements of an ASOF.
+			// 对于这些连接类型，我们可以使用普通连接，因为右侧匹配并不重要(asof 语义失效，没必要保持asof)
+			// 但我们会验证ASOF的要求
 			is_asof = false;
 			ref_type = JoinRefType::REGULAR;
 			break;
 		default:
 			break;
 		}
+		// xm: 检查asof join,确保只有一个非等值比较条件，并且它是一个有效的asof比较（等值比较可以有很多）
 		idx_t asof_idx = comparison_conditions.size();
 		for (size_t c = 0; c < comparison_conditions.size(); ++c) {
 			auto &cond = comparison_conditions[c];
 			switch (cond.GetComparisonType()) {
-			case ExpressionType::COMPARE_EQUAL:
-			case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-				break;
-			case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			case ExpressionType::COMPARE_GREATERTHAN:
-			case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-			case ExpressionType::COMPARE_LESSTHAN:
+			case ExpressionType::COMPARE_EQUAL: // =
+			case ExpressionType::COMPARE_NOT_DISTINCT_FROM: // Not Distinct From
+				break; // xm: switch 内部的 break 只会跳出当前的 switch 块，不会终止循环
+			case ExpressionType::COMPARE_GREATERTHANOREQUALTO: // >=
+			case ExpressionType::COMPARE_GREATERTHAN: // >
+			case ExpressionType::COMPARE_LESSTHANOREQUALTO: // <=
+			case ExpressionType::COMPARE_LESSTHAN: // <
 				if (asof_idx < comparison_conditions.size()) {
 					throw BinderException("Multiple ASOF JOIN inequalities");
 				}
@@ -293,7 +298,8 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, Joi
 		}
 	}
 
-	// Reconstruct full conditions vector
+	// 重构完整的条件向量（vector）,这里涉及到C++的移动语义（move semantics）：
+	// comparison_conditions中的元素变了（被掏空了），但是其元素个数并没有变，也就是size()的结果没有变
 	vector<JoinCondition> all_conditions;
 	for (auto &cond : comparison_conditions) {
 		all_conditions.push_back(std::move(cond));
@@ -302,8 +308,8 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, Joi
 		all_conditions.push_back(std::move(cond));
 	}
 
-	// what type of join to create now?
-	// Case 1: ASOF join - use comparison join (all conditions already in vector)
+	// 准备工作已经就绪，现在根据不同的情况创建连接操作符：
+	// 情况1：ASOF连接 - 使用比较连接（所有条件已经在向量中）
 	if (is_asof) {
 		auto asof_join = make_uniq<LogicalComparisonJoin>(type, LogicalOperatorType::LOGICAL_ASOF_JOIN);
 		asof_join->conditions = std::move(all_conditions);
@@ -312,9 +318,9 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, Joi
 		return std::move(asof_join);
 	}
 
-	// Case 2: No comparison conditions - use any join
+	// 情况2：没有比较条件 - 使用any join（此时可能存在非比较条件）
 	if (comparison_conditions.empty()) {
-		if (all_conditions.empty()) {
+		if (all_conditions.empty()) { // 没有任何条件，包括比较条件和非比较快条件
 			all_conditions.emplace_back(make_uniq<BoundConstantExpression>(Value::BOOLEAN(true)));
 		}
 
@@ -325,7 +331,7 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(JoinType type, Joi
 		return std::move(any_join);
 	}
 
-	// Case 3: Has comparison conditions - Use comparison join
+	// 情况3：有比较条件 - 使用比较连接
 	auto comp_join = make_uniq<LogicalComparisonJoin>(type, LogicalOperatorType::LOGICAL_COMPARISON_JOIN);
 	comp_join->conditions = std::move(all_conditions);
 	comp_join->children.push_back(std::move(left_child));
@@ -359,27 +365,27 @@ unique_ptr<LogicalOperator> LogicalComparisonJoin::CreateJoin(ClientContext &con
 
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundJoinRef &ref) {
 	auto old_is_outside_flattened = is_outside_flattened;
-	// Plan laterals from outermost to innermost
+	// 从最外层到最内层规划横向连接（LATERAL）,Plan laterals from outermost to innermost
 	if (ref.lateral) {
-		// Set the flag to ensure that children do not flatten before the root
+		// Set the flag to ensure that children do not flatten before the root,xm:// 设置标志位，确保子节点在根节点之前不会被扁平化
 		is_outside_flattened = false;
 	}
+	// xm: 准备左子树和右子树
 	auto left = std::move(ref.left.plan);
 	auto right = std::move(ref.right.plan);
 	is_outside_flattened = old_is_outside_flattened;
 
-	// For joins, depth of the bindings will be one higher on the right because of the lateral binder
-	// If the current join does not have correlations between left and right, then the right bindings
-	// have depth 1 too high and can be reduced by 1 throughout
+	// 对于连接操作，由于横向绑定器（lateral binder）的存在，右侧绑定的深度会比左侧高1
+	// 如果当前连接在左右两侧之间没有关联关系，那么右侧绑定的深度会整体偏高1，可以在整个过程中将其减少1
 	if (!ref.lateral && !ref.correlated_columns.empty()) {
 		LateralBinder::ReduceExpressionDepth(*right, ref.correlated_columns);
 	}
-
+	// xm: 将右外连接转换为左外连接
 	if (ref.type == JoinType::RIGHT && ref.ref_type != JoinRefType::ASOF &&
 	    ClientConfig::GetConfig(context).enable_optimizer &&
 	    !Optimizer::OptimizerDisabled(context, OptimizerType::BUILD_SIDE_PROBE_SIDE)) {
-		// we turn any right outer joins into left outer joins for optimization purposes
-		// they are the same but with sides flipped, so treating them the same simplifies life
+		// 为了优化目的，我们将任何右外连接转换为左外连接
+		// 它们本质上是相同的，只是左右两侧互换，因此将它们同等对待可以简化处理
 		ref.type = JoinType::LEFT;
 		std::swap(left, right);
 	}
@@ -392,6 +398,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundJoinRef &ref) {
 		}
 		return new_plan;
 	}
+	// xm: 跳转处理特殊连接类型
 	switch (ref.ref_type) {
 	case JoinRefType::CROSS:
 		return LogicalCrossProduct::Create(std::move(left), std::move(right));
@@ -400,10 +407,11 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundJoinRef &ref) {
 	default:
 		break;
 	}
+	// xm: 处理其他连接类型
 	if (ref.type == JoinType::INNER && (ref.condition->HasSubquery() || HasCorrelatedColumns(*ref.condition)) &&
 	    ref.ref_type == JoinRefType::REGULAR) {
-		// inner join, generate a cross product + filter
-		// this will be later turned into a proper join by the join order optimizer
+		// 内连接，生成笛卡尔积 + 过滤条件
+		// 之后将由连接顺序优化器将其转换为合适的连接操作
 		auto root = LogicalCrossProduct::Create(std::move(left), std::move(right));
 
 		auto filter = make_uniq<LogicalFilter>(std::move(ref.condition));
@@ -432,7 +440,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundJoinRef &ref) {
 		if (child->type == LogicalOperatorType::LOGICAL_FILTER) {
 			auto &filter = child->Cast<LogicalFilter>();
 			for (auto &expr : filter.expressions) {
-				PlanSubqueries(expr, filter.children[0]);
+				PlanSubqueries(expr, filter.children[0]); // 处理表达式中的子查询
 			}
 		}
 	}
@@ -445,7 +453,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundJoinRef &ref) {
 		for (idx_t i = 0; i < comp_join.conditions.size(); i++) {
 			auto &cond = comp_join.conditions[i];
 			if (cond.IsComparison()) {
-				PlanSubqueries(cond.LeftReference(), comp_join.children[0]);
+				PlanSubqueries(cond.LeftReference(), comp_join.children[0]);  // 处理表达式中的子查询
 				PlanSubqueries(cond.RightReference(), comp_join.children[1]);
 			}
 		}
